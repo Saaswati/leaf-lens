@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LeafLens — Plant Disease Detection</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background: #0a0f0a;
+            color: #e8f5e9;
+            min-height: 100vh;
+        }
+
+        header {
+            background: linear-gradient(135deg, #1b5e20, #2e7d32);
+            padding: 24px 40px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+        }
+
+        header h1 {
+            font-size: 28px;
+            font-weight: 700;
+            color: #fff;
+        }
+
+        header p {
+            font-size: 14px;
+            color: #a5d6a7;
+            margin-top: 2px;
+        }
+
+        .leaf-icon {
+            font-size: 36px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 48px auto;
+            padding: 0 24px;
+        }
+
+        .upload-card {
+            background: #111b11;
+            border: 2px dashed #2e7d32;
+            border-radius: 16px;
+            padding: 48px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .upload-card:hover {
+            border-color: #66bb6a;
+            background: #162016;
+        }
+
+        .upload-card.dragover {
+            border-color: #66bb6a;
+            background: #1a2e1a;
+        }
+
+        .upload-icon { font-size: 48px; margin-bottom: 16px; }
+
+        .upload-card h2 {
+            font-size: 20px;
+            color: #81c784;
+            margin-bottom: 8px;
+        }
+
+        .upload-card p {
+            color: #558b2f;
+            font-size: 14px;
+        }
+
+        #fileInput { display: none; }
+
+        .btn {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 12px 32px;
+            background: #2e7d32;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .btn:hover { background: #388e3c; }
+
+        .preview-section {
+            margin-top: 32px;
+            display: none;
+        }
+
+        .preview-section img {
+            width: 200px;
+            height: 200px;
+            object-fit: cover;
+            border-radius: 12px;
+            border: 2px solid #2e7d32;
+        }
+
+        .analyze-btn {
+            display: block;
+            width: 100%;
+            margin-top: 20px;
+            padding: 16px;
+            background: linear-gradient(135deg, #2e7d32, #1b5e20);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 18px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        .analyze-btn:hover { opacity: 0.9; }
+        .analyze-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .loading {
+            text-align: center;
+            padding: 32px;
+            display: none;
+        }
+
+        .spinner {
+            width: 48px;
+            height: 48px;
+            border: 4px solid #2e7d32;
+            border-top: 4px solid #66bb6a;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 16px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .result-card {
+            background: #111b11;
+            border-radius: 16px;
+            padding: 32px;
+            margin-top: 32px;
+            display: none;
+            border: 1px solid #2e7d32;
+        }
+
+        .result-header {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .status-badge {
+            padding: 6px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .healthy { background: #1b5e20; color: #a5d6a7; }
+        .diseased { background: #b71c1c; color: #ffcdd2; }
+
+        .result-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .result-item {
+            background: #162016;
+            border-radius: 12px;
+            padding: 16px;
+            text-align: center;
+        }
+
+        .result-item .label {
+            font-size: 12px;
+            color: #558b2f;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+        }
+
+        .result-item .value {
+            font-size: 20px;
+            font-weight: 700;
+            color: #81c784;
+        }
+
+        .gradcam-section h3 {
+            color: #81c784;
+            margin-bottom: 16px;
+            font-size: 16px;
+        }
+
+        .gradcam-section img {
+            width: 100%;
+            border-radius: 12px;
+            border: 1px solid #2e7d32;
+        }
+
+        .reset-btn {
+            display: block;
+            width: 100%;
+            margin-top: 20px;
+            padding: 12px;
+            background: transparent;
+            color: #558b2f;
+            border: 1px solid #2e7d32;
+            border-radius: 8px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .reset-btn:hover {
+            background: #162016;
+            color: #81c784;
+        }
+
+        footer {
+            text-align: center;
+            padding: 32px;
+            color: #2e7d32;
+            font-size: 13px;
+            margin-top: 48px;
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <div class="leaf-icon">🌿</div>
+    <div>
+        <h1>LeafLens</h1>
+        <p>AI-powered plant disease detection with Explainable Deep Learning</p>
+    </div>
+</header>
+
+<div class="container">
+
+    <!-- Upload Section -->
+    <div class="upload-card" id="dropZone">
+        <div class="upload-icon">🍃</div>
+        <h2>Upload a Leaf Image</h2>
+        <p>Supports JPG, PNG — drag & drop or click to browse</p>
+        <button class="btn" onclick="document.getElementById('fileInput').click()">
+            Choose Image
+        </button>
+        <input type="file" id="fileInput" accept="image/*">
+    </div>
+
+    <!-- Preview -->
+    <div class="preview-section" id="previewSection">
+        <img id="previewImg" src="" alt="Preview">
+        <button class="analyze-btn" id="analyzeBtn" onclick="analyze()">
+            🔍 Analyze Leaf
+        </button>
+    </div>
+
+    <!-- Loading -->
+    <div class="loading" id="loading">
+        <div class="spinner"></div>
+        <p style="color:#558b2f">Analyzing leaf with EfficientNet-B3...</p>
+    </div>
+
+    <!-- Result -->
+    <div class="result-card" id="resultCard">
+        <div class="result-header">
+            <h2 id="resultTitle" style="font-size:22px; color:#fff"></h2>
+            <span class="status-badge" id="statusBadge"></span>
+        </div>
+
+        <div class="result-grid">
+            <div class="result-item">
+                <div class="label">Plant</div>
+                <div class="value" id="plantName"></div>
+            </div>
+            <div class="result-item">
+                <div class="label">Condition</div>
+                <div class="value" id="diseaseName" style="font-size:14px; padding-top:4px"></div>
+            </div>
+            <div class="result-item">
+                <div class="label">Confidence</div>
+                <div class="value" id="confidence"></div>
+            </div>
+        </div>
+
+        <div class="gradcam-section">
+            <h3>🔍 Grad-CAM Explainability — What the model focused on</h3>
+            <img id="gradcamImg" src="" alt="Grad-CAM">
+        </div>
+
+        <button class="reset-btn" onclick="reset()">↩ Analyze another leaf</button>
+    </div>
+
+</div>
+
+<footer>
+    LeafLens · EfficientNet-B3 · PlantVillage Dataset · 38 Disease Classes · 98.64% Accuracy
+</footer>
+
+<script>
+    let selectedFile = null;
+
+    // File input change
+    document.getElementById('fileInput').addEventListener('change', function(e) {
+        handleFile(e.target.files[0]);
+    });
+
+    // Drag and drop
+    const dropZone = document.getElementById('dropZone');
+    dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropZone.classList.add('dragover');
+    });
+    dropZone.addEventListener('dragleave', () => {
+        dropZone.classList.remove('dragover');
+    });
+    dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('dragover');
+        handleFile(e.dataTransfer.files[0]);
+    });
+
+    function handleFile(file) {
+        if (!file) return;
+        selectedFile = file;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            document.getElementById('previewImg').src = e.target.result;
+            document.getElementById('previewSection').style.display = 'block';
+            document.getElementById('dropZone').style.display = 'none';
+        };
+        reader.readAsDataURL(file);
+    }
+
+    async function analyze() {
+        if (!selectedFile) return;
+
+        document.getElementById('previewSection').style.display = 'none';
+        document.getElementById('loading').style.display = 'block';
+        document.getElementById('resultCard').style.display = 'none';
+
+        const formData = new FormData();
+        formData.append('file', selectedFile);
+
+        try {
+            const response = await fetch('/predict', {
+                method: 'POST',
+                body: formData
+            });
+            const data = await response.json();
+
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('resultCard').style.display = 'block';
+
+            document.getElementById('plantName').textContent = data.plant;
+            document.getElementById('diseaseName').textContent = data.disease;
+            document.getElementById('confidence').textContent = data.confidence + '%';
+            document.getElementById('resultTitle').textContent =
+                data.is_healthy ? '✅ Healthy Plant' : '⚠️ Disease Detected';
+
+            const badge = document.getElementById('statusBadge');
+            badge.textContent = data.is_healthy ? 'Healthy' : 'Diseased';
+            badge.className = 'status-badge ' + (data.is_healthy ? 'healthy' : 'diseased');
+
+            document.getElementById('gradcamImg').src =
+                'data:image/png;base64,' + data.gradcam;
+
+        } catch (err) {
+            document.getElementById('loading').style.display = 'none';
+            alert('Error analyzing image. Please try again.');
+        }
+    }
+
+    function reset() {
+        selectedFile = null;
+        document.getElementById('resultCard').style.display = 'none';
+        document.getElementById('previewSection').style.display = 'none';
+        document.getElementById('dropZone').style.display = 'block';
+        document.getElementById('fileInput').value = '';
+    }
+</script>
+
+</body>
+</html>
