@@ -1,4 +1,7 @@
 import gc
+import io
+import base64
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -6,11 +9,9 @@ import timm
 import numpy as np
 from torchvision import transforms
 from PIL import Image
-import io
-import base64
-import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 # ── CLASS NAMES ──────────────────────────────────────────────
 CLASS_NAMES = [
@@ -38,15 +39,13 @@ CLASS_NAMES = [
     'Tomato___Tomato_mosaic_virus', 'Tomato___healthy'
 ]
 
-# ── MODEL DEFINITION ─────────────────────────────────────────
+# ── MODEL ────────────────────────────────────────────────────
 class PlantDiseaseModel(nn.Module):
     def __init__(self, num_classes=38, dropout=0.4):
         super().__init__()
         self.backbone = timm.create_model(
-            "efficientnet_b3",
-            pretrained=False,
-            num_classes=0,
-            global_pool="avg"
+            "efficientnet_b3", pretrained=False,
+            num_classes=0, global_pool="avg"
         )
         in_features = self.backbone.num_features
         self.classifier = nn.Sequential(
@@ -60,8 +59,7 @@ class PlantDiseaseModel(nn.Module):
         )
 
     def forward(self, x):
-        features = self.backbone(x)
-        return self.classifier(features)
+        return self.classifier(self.backbone(x))
 
 # ── TRANSFORMS ───────────────────────────────────────────────
 transform = transforms.Compose([
@@ -71,22 +69,20 @@ transform = transforms.Compose([
                          [0.229, 0.224, 0.225])
 ])
 
-# ── LAZY GLOBALS (not loaded at import time) ──────────────────
+# ── LAZY GLOBALS ─────────────────────────────────────────────
 _model    = None
 _grad_cam = None
 
 def _load_model():
-    """Load model only on first prediction request."""
     global _model, _grad_cam
     if _model is not None:
         return
-    device = torch.device("cpu")
     m = PlantDiseaseModel(num_classes=38)
-    m.load_state_dict(torch.load("model/best_model.pth", map_location=device))
+    m.load_state_dict(torch.load("model/best_model.pth", map_location="cpu"))
     m.eval()
+    _grad_cam = GradCAM(m, m.backbone.conv_head)
+    _model = m
     gc.collect()
-    _model    = m
-    _grad_cam = GradCAM(_model, _model.backbone.conv_head)
     print("✅ Model loaded successfully")
 
 # ── GRAD-CAM ─────────────────────────────────────────────────
@@ -96,15 +92,14 @@ class GradCAM:
         self.target_layer = target_layer
         self.gradients    = None
         self.activations  = None
-        self._register_hooks()
+        target_layer.register_forward_hook(self._fwd)
+        target_layer.register_full_backward_hook(self._bwd)
 
-    def _register_hooks(self):
-        def forward_hook(module, input, output):
-            self.activations = output.detach()
-        def backward_hook(module, grad_input, grad_output):
-            self.gradients = grad_output[0].detach()
-        self.target_layer.register_forward_hook(forward_hook)
-        self.target_layer.register_full_backward_hook(backward_hook)
+    def _fwd(self, m, i, o):
+        self.activations = o.detach()
+
+    def _bwd(self, m, gi, go):
+        self.gradients = go[0].detach()
 
     def generate(self, input_tensor, class_idx):
         output = self.model(input_tensor)
@@ -112,22 +107,29 @@ class GradCAM:
         one_hot = torch.zeros_like(output)
         one_hot[0][class_idx] = 1
         output.backward(gradient=one_hot)
-        weights  = self.gradients.mean(dim=[2, 3], keepdim=True)
-        cam      = (weights * self.activations).sum(dim=1, keepdim=True)
-        cam      = F.relu(cam)
-        cam      = F.interpolate(cam, size=(224, 224),
-                                 mode='bilinear', align_corners=False)
-        cam      = cam.squeeze().numpy()
-        cam      = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
+
+        weights = self.gradients.mean(dim=[2, 3], keepdim=True)
+        cam     = (weights * self.activations).sum(dim=1, keepdim=True)
+        cam     = F.relu(cam)
+        cam     = F.interpolate(cam, size=(224, 224),
+                                mode='bilinear', align_corners=False)
+        cam     = cam.squeeze().numpy()
+        cam     = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
+
+        # Free gradient memory immediately
+        self.gradients   = None
+        self.activations = None
+        gc.collect()
         return cam
 
-# ── INFERENCE FUNCTION ───────────────────────────────────────
+# ── PREDICT ──────────────────────────────────────────────────
 def predict(image_bytes: bytes):
-    _load_model()  # no-op if already loaded
+    _load_model()
 
     image      = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     img_tensor = transform(image).unsqueeze(0)
 
+    # Inference (no grad needed)
     with torch.no_grad():
         outputs              = _model(img_tensor)
         probs                = torch.softmax(outputs, dim=1)
@@ -139,31 +141,32 @@ def predict(image_bytes: bytes):
     plant      = class_name.split("___")[0].replace("_", " ")
     disease    = class_name.split("___")[1].replace("_", " ")
 
-    # Grad-CAM
-    img_tensor2 = transform(image).unsqueeze(0)
-    img_tensor2.requires_grad_(True)
-    cam_map = _grad_cam.generate(img_tensor2, pred_idx)
+    # Grad-CAM (needs grad, separate tensor)
+    img_tensor2 = transform(image).unsqueeze(0).requires_grad_(True)
+    cam_map     = _grad_cam.generate(img_tensor2, pred_idx)
+    del img_tensor2
+    gc.collect()
 
-    # Visualization
+    # Visualization (low DPI to save RAM)
     img_display = np.array(image.resize((224, 224))) / 255.0
     heatmap     = plt.cm.jet(cam_map)[:, :, :3]
     overlay     = np.clip(0.5 * img_display + 0.5 * heatmap, 0, 1)
 
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
-    fig.suptitle("LeafLens Analysis", fontsize=14, fontweight='bold')
-
-    axes[0].imshow(img_display);      axes[0].set_title("Original Image");     axes[0].axis("off")
-    axes[1].imshow(cam_map, cmap='jet'); axes[1].set_title("Grad-CAM Heatmap"); axes[1].axis("off")
-    axes[2].imshow(overlay);          axes[2].set_title("Overlay");             axes[2].axis("off")
-
+    fig, axes = plt.subplots(1, 3, figsize=(10, 3))
+    fig.suptitle("LeafLens Analysis", fontsize=12, fontweight='bold')
+    axes[0].imshow(img_display);         axes[0].set_title("Original");   axes[0].axis("off")
+    axes[1].imshow(cam_map, cmap='jet'); axes[1].set_title("Grad-CAM");   axes[1].axis("off")
+    axes[2].imshow(overlay);             axes[2].set_title("Overlay");     axes[2].axis("off")
     plt.tight_layout()
+
     buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=72, bbox_inches='tight')
+    plt.savefig(buf, format='png', dpi=60, bbox_inches='tight')
     plt.close('all')
-    plt.clf()
     buf.seek(0)
     img_base64 = base64.b64encode(buf.read()).decode('utf-8')
 
+    # Final cleanup
+    del img_display, heatmap, overlay, cam_map, buf
     gc.collect()
 
     return {
