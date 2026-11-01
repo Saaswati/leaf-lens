@@ -1,3 +1,4 @@
+import gc
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -62,16 +63,6 @@ class PlantDiseaseModel(nn.Module):
         features = self.backbone(x)
         return self.classifier(features)
 
-# ── LOAD MODEL ───────────────────────────────────────────────
-device = torch.device("cpu")
-
-model = PlantDiseaseModel(num_classes=38)
-model.load_state_dict(
-    torch.load("model/best_model.pth", map_location=device)
-)
-model.eval()
-print("✅ Model loaded successfully")
-
 # ── TRANSFORMS ───────────────────────────────────────────────
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
@@ -80,8 +71,23 @@ transform = transforms.Compose([
                          [0.229, 0.224, 0.225])
 ])
 
-mean = torch.tensor([0.485, 0.456, 0.406])
-std  = torch.tensor([0.229, 0.224, 0.225])
+# ── LAZY GLOBALS (not loaded at import time) ──────────────────
+_model    = None
+_grad_cam = None
+
+def _load_model():
+    """Load model only on first prediction request."""
+    global _model, _grad_cam
+    if _model is not None:
+        return
+    device = torch.device("cpu")
+    m = PlantDiseaseModel(num_classes=38)
+    m.load_state_dict(torch.load("model/best_model.pth", map_location=device))
+    m.eval()
+    gc.collect()
+    _model    = m
+    _grad_cam = GradCAM(_model, _model.backbone.conv_head)
+    print("✅ Model loaded successfully")
 
 # ── GRAD-CAM ─────────────────────────────────────────────────
 class GradCAM:
@@ -115,60 +121,49 @@ class GradCAM:
         cam      = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
         return cam
 
-grad_cam = GradCAM(model, model.backbone.conv_head)
-
 # ── INFERENCE FUNCTION ───────────────────────────────────────
 def predict(image_bytes: bytes):
-    # Load and preprocess image
-    image    = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    img_tensor = transform(image).unsqueeze(0)
-    img_tensor.requires_grad_(True)
+    _load_model()  # no-op if already loaded
 
-    # Run inference
+    image      = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    img_tensor = transform(image).unsqueeze(0)
+
     with torch.no_grad():
-        outputs     = model(img_tensor)
-        probs       = torch.softmax(outputs, dim=1)
+        outputs              = _model(img_tensor)
+        probs                = torch.softmax(outputs, dim=1)
         confidence, pred_idx = probs.max(dim=1)
 
-    pred_idx    = pred_idx.item()
-    confidence  = confidence.item() * 100
-    class_name  = CLASS_NAMES[pred_idx]
-    plant       = class_name.split("___")[0].replace("_", " ")
-    disease     = class_name.split("___")[1].replace("_", " ")
+    pred_idx   = pred_idx.item()
+    confidence = confidence.item() * 100
+    class_name = CLASS_NAMES[pred_idx]
+    plant      = class_name.split("___")[0].replace("_", " ")
+    disease    = class_name.split("___")[1].replace("_", " ")
 
-    # Generate Grad-CAM
+    # Grad-CAM
     img_tensor2 = transform(image).unsqueeze(0)
     img_tensor2.requires_grad_(True)
-    cam_map = grad_cam.generate(img_tensor2, pred_idx)
+    cam_map = _grad_cam.generate(img_tensor2, pred_idx)
 
-    # Create visualization
+    # Visualization
     img_display = np.array(image.resize((224, 224))) / 255.0
     heatmap     = plt.cm.jet(cam_map)[:, :, :3]
     overlay     = np.clip(0.5 * img_display + 0.5 * heatmap, 0, 1)
 
-    # Convert overlay to base64
     fig, axes = plt.subplots(1, 3, figsize=(12, 4))
-    fig.suptitle(f"LeafLens Analysis", fontsize=14, fontweight='bold')
+    fig.suptitle("LeafLens Analysis", fontsize=14, fontweight='bold')
 
-    axes[0].imshow(img_display)
-    axes[0].set_title("Original Image")
-    axes[0].axis("off")
-
-    axes[1].imshow(cam_map, cmap='jet')
-    axes[1].set_title("Grad-CAM Heatmap")
-    axes[1].axis("off")
-
-    axes[2].imshow(overlay)
-    axes[2].set_title("Overlay")
-    axes[2].axis("off")
+    axes[0].imshow(img_display);      axes[0].set_title("Original Image");     axes[0].axis("off")
+    axes[1].imshow(cam_map, cmap='jet'); axes[1].set_title("Grad-CAM Heatmap"); axes[1].axis("off")
+    axes[2].imshow(overlay);          axes[2].set_title("Overlay");             axes[2].axis("off")
 
     plt.tight_layout()
-
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=100, bbox_inches='tight')
     plt.close()
     buf.seek(0)
     img_base64 = base64.b64encode(buf.read()).decode('utf-8')
+
+    gc.collect()
 
     return {
         "plant"      : plant,
