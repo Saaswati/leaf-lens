@@ -158,8 +158,9 @@ def predict(image_bytes: bytes):
 
     plt.tight_layout()
     buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=100, bbox_inches='tight')
-    plt.close()
+    plt.savefig(buf, format='png', dpi=72, bbox_inches='tight')
+    plt.close('all')
+    plt.clf()
     buf.seek(0)
     img_base64 = base64.b64encode(buf.read()).decode('utf-8')
 
